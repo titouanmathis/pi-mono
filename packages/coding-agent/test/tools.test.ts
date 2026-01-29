@@ -554,6 +554,60 @@ describe("edit tool fuzzy matching", () => {
 	});
 });
 
+describe("path-utils macOS Unicode normalization", () => {
+	let testDir: string;
+
+	beforeEach(() => {
+		testDir = join(tmpdir(), `coding-agent-path-test-${Date.now()}`);
+		mkdirSync(testDir, { recursive: true });
+	});
+
+	afterEach(() => {
+		rmSync(testDir, { recursive: true, force: true });
+	});
+
+	it("should resolve NFD path when user provides NFC", async () => {
+		// Create file with NFD filename (decomposed: e + combining acute accent)
+		const nfdFilename = "caf\u0065\u0301.txt"; // café in NFD
+		const testFile = join(testDir, nfdFilename);
+		writeFileSync(testFile, "test content");
+
+		// User provides NFC path (composed: é as single char)
+		const nfcFilename = "caf\u00e9.txt"; // café in NFC
+		const nfcPath = join(testDir, nfcFilename);
+
+		const result = await readTool.execute("test-nfd-1", { path: nfcPath });
+		expect(getTextOutput(result)).toBe("test content");
+	});
+
+	it("should resolve curly quote path when user provides straight quote", async () => {
+		// Create file with curly quote (like macOS screenshot "Capture d'écran")
+		const curlyQuoteFilename = "file\u2019s.txt"; // file's with curly quote
+		const testFile = join(testDir, curlyQuoteFilename);
+		writeFileSync(testFile, "curly quote content");
+
+		// User provides straight quote
+		const straightQuotePath = join(testDir, "file's.txt");
+
+		const result = await readTool.execute("test-curly-1", { path: straightQuotePath });
+		expect(getTextOutput(result)).toBe("curly quote content");
+	});
+
+	it("should resolve combined NFD + curly quote path", async () => {
+		// Simulate macOS screenshot filename: "Capture d'écran" in NFD with curly quote
+		// écran in NFD = e + combining acute + cran
+		const macOSFilename = "d\u2019e\u0301cran.txt";
+		const testFile = join(testDir, macOSFilename);
+		writeFileSync(testFile, "macos content");
+
+		// User provides NFC with straight quote
+		const userPath = join(testDir, "d'\u00e9cran.txt");
+
+		const result = await readTool.execute("test-macos-1", { path: userPath });
+		expect(getTextOutput(result)).toBe("macos content");
+	});
+});
+
 describe("edit tool CRLF handling", () => {
 	let testDir: string;
 
