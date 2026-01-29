@@ -230,5 +230,132 @@ describe("CombinedAutocompleteProvider", () => {
 			assert.ok(values?.includes("@src/components/Button.tsx"));
 			assert.ok(!values?.includes("@src/utils/helpers.ts"));
 		});
+
+		test("escapes spaces in folder names for @ suggestions", () => {
+			setupFolder(baseDir, {
+				dirs: ["my folder"],
+				files: {
+					"my folder/test.txt": "content",
+				},
+			});
+
+			const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
+			const line = "@my";
+			const result = provider.getSuggestions([line], 0, line.length);
+
+			const values = result?.items.map((item) => item.value);
+			// Spaces should be escaped with backslash
+			assert.ok(values?.some((v) => v === "@my\\ folder/"));
+		});
+
+		test("continues autocomplete after escaped space in @ path", () => {
+			setupFolder(baseDir, {
+				files: {
+					"my folder/test.txt": "content",
+					"my folder/other.txt": "content",
+				},
+			});
+
+			const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
+			// User has already completed to "@my\ folder/" and wants to see contents
+			const line = "@my\\ folder/";
+			const result = provider.getSuggestions([line], 0, line.length);
+
+			assert.notEqual(result, null, "Should return suggestions for folder with space");
+			const values = result?.items.map((item) => item.value);
+			assert.ok(values?.includes("@my\\ folder/test.txt"));
+			assert.ok(values?.includes("@my\\ folder/other.txt"));
+		});
+	});
+
+	describe("paths with spaces (Tab completion)", () => {
+		let baseDir = "";
+
+		beforeEach(() => {
+			baseDir = mkdtempSync(join(tmpdir(), "pi-autocomplete-spaces-"));
+		});
+
+		afterEach(() => {
+			rmSync(baseDir, { recursive: true, force: true });
+		});
+
+		test("escapes spaces in folder names for Tab suggestions", () => {
+			setupFolder(baseDir, {
+				dirs: ["my folder"],
+			});
+
+			const provider = new CombinedAutocompleteProvider([], baseDir, null);
+			const line = "my";
+			const result = provider.getForceFileSuggestions([line], 0, line.length);
+
+			const values = result?.items.map((item) => item.value);
+			// Spaces should be escaped with backslash
+			assert.ok(values?.some((v) => v === "my\\ folder/"));
+		});
+
+		test("continues autocomplete after escaped space in path", () => {
+			setupFolder(baseDir, {
+				files: {
+					"my folder/test.txt": "content",
+				},
+			});
+
+			const provider = new CombinedAutocompleteProvider([], baseDir, null);
+			// User has already completed to "my\ folder/" and wants to see contents
+			const line = "my\\ folder/";
+			const result = provider.getForceFileSuggestions([line], 0, line.length);
+
+			assert.notEqual(result, null, "Should return suggestions for folder with space");
+			const values = result?.items.map((item) => item.value);
+			assert.ok(values?.includes("my\\ folder/test.txt"));
+		});
+
+		test("handles nested folders with spaces", () => {
+			setupFolder(baseDir, {
+				files: {
+					"my folder/sub folder/file.txt": "content",
+				},
+			});
+
+			const provider = new CombinedAutocompleteProvider([], baseDir, null);
+			const line = "my\\ folder/";
+			const result = provider.getForceFileSuggestions([line], 0, line.length);
+
+			const values = result?.items.map((item) => item.value);
+			assert.ok(values?.includes("my\\ folder/sub\\ folder/"));
+		});
+
+		test("does not double-escape already escaped paths", () => {
+			setupFolder(baseDir, {
+				files: {
+					"my folder/test.txt": "content",
+				},
+			});
+
+			const provider = new CombinedAutocompleteProvider([], baseDir, null);
+			const line = "my\\ folder/";
+			const result = provider.getForceFileSuggestions([line], 0, line.length);
+
+			const values = result?.items.map((item) => item.value);
+			// Should be single escaped, not double
+			assert.ok(values?.includes("my\\ folder/test.txt"));
+			assert.ok(!values?.some((v) => v.includes("\\\\ "))); // No double escapes
+		});
+
+		test("paths without spaces still work", () => {
+			setupFolder(baseDir, {
+				dirs: ["normal"],
+				files: {
+					"normal/file.txt": "content",
+				},
+			});
+
+			const provider = new CombinedAutocompleteProvider([], baseDir, null);
+			const line = "normal/";
+			const result = provider.getForceFileSuggestions([line], 0, line.length);
+
+			const values = result?.items.map((item) => item.value);
+			assert.ok(values?.includes("normal/file.txt"));
+		});
 	});
 });

@@ -4,6 +4,38 @@ import { homedir } from "os";
 import { basename, dirname, join } from "path";
 import { fuzzyFilter } from "./fuzzy.js";
 
+// Escape spaces in paths with backslash (for shell-like behavior)
+function escapePathSpaces(path: string): string {
+	return path.replace(/ /g, "\\ ");
+}
+
+// Unescape backslash-escaped spaces in paths
+function unescapePathSpaces(path: string): string {
+	return path.replace(/\\ /g, " ");
+}
+
+// Find the last unescaped delimiter in text
+// Returns -1 if no unescaped delimiter found
+function findLastUnescapedDelimiter(text: string): number {
+	const delimiters = [" ", "\t", '"', "'", "="];
+	let lastIndex = -1;
+
+	for (let i = text.length - 1; i >= 0; i--) {
+		const char = text[i];
+		if (delimiters.includes(char)) {
+			// Check if this delimiter is escaped (preceded by backslash)
+			if (i > 0 && text[i - 1] === "\\") {
+				// This delimiter is escaped, skip it
+				continue;
+			}
+			lastIndex = i;
+			break;
+		}
+	}
+
+	return lastIndex;
+}
+
 // Use fd to walk directory tree (fast, respects .gitignore)
 function walkDirectoryWithFd(
 	baseDir: string,
@@ -119,10 +151,11 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const textBeforeCursor = currentLine.slice(0, cursorCol);
 
 		// Check for @ file reference (fuzzy search) - must be after a space or at start
-		const atMatch = textBeforeCursor.match(/(?:^|[\s])(@[^\s]*)$/);
+		// Allow backslash-escaped spaces in the path
+		const atMatch = textBeforeCursor.match(/(?:^|(?<!\\)\s)(@(?:[^\s\\]|\\.)*)$/);
 		if (atMatch) {
 			const prefix = atMatch[1] ?? "@"; // The @... part
-			const query = prefix.slice(1); // Remove the @
+			const query = unescapePathSpaces(prefix.slice(1)); // Remove the @ and unescape spaces
 			const suggestions = this.getFuzzyFileSuggestions(query);
 			if (suggestions.length === 0) return null;
 
@@ -284,20 +317,14 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 	// Extract a path-like prefix from the text before cursor
 	private extractPathPrefix(text: string, forceExtract: boolean = false): string | null {
 		// Check for @ file attachment syntax first
-		const atMatch = text.match(/@([^\s]*)$/);
+		// Match @ followed by any characters, allowing backslash-escaped spaces
+		const atMatch = text.match(/@((?:[^\s\\]|\\.)*)$/);
 		if (atMatch) {
 			return atMatch[0]; // Return the full @path pattern
 		}
 
-		// Simple approach: find the last whitespace/delimiter and extract the word after it
-		// This avoids catastrophic backtracking from nested quantifiers
-		const lastDelimiterIndex = Math.max(
-			text.lastIndexOf(" "),
-			text.lastIndexOf("\t"),
-			text.lastIndexOf('"'),
-			text.lastIndexOf("'"),
-			text.lastIndexOf("="),
-		);
+		// Find the last unescaped delimiter (respects backslash-escaped spaces)
+		const lastDelimiterIndex = findLastUnescapedDelimiter(text);
 
 		const pathPrefix = lastDelimiterIndex === -1 ? text : text.slice(lastDelimiterIndex + 1);
 
@@ -346,6 +373,9 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				isAtPrefix = true;
 				expandedPrefix = prefix.slice(1); // Remove the @
 			}
+
+			// Unescape backslash-escaped spaces for filesystem access
+			expandedPrefix = unescapePathSpaces(expandedPrefix);
 
 			// Handle home directory expansion
 			if (expandedPrefix.startsWith("~")) {
@@ -430,37 +460,43 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 							relativePath = `@${name}`;
 						}
 					}
-				} else if (prefix.endsWith("/")) {
+				} else if (expandedPrefix.endsWith("/")) {
 					// If prefix ends with /, append entry to the prefix
-					relativePath = prefix + name;
-				} else if (prefix.includes("/")) {
+					// Use expandedPrefix (unescaped) to build path, will escape at the end
+					relativePath = `${expandedPrefix}${name}`;
+				} else if (expandedPrefix.includes("/")) {
 					// Preserve ~/ format for home directory paths
-					if (prefix.startsWith("~/")) {
-						const homeRelativeDir = prefix.slice(2); // Remove ~/
+					// Use unescaped prefix to check for ~/ but build with expandedPrefix
+					const unescapedPrefix = unescapePathSpaces(prefix);
+					if (unescapedPrefix.startsWith("~/")) {
+						const homeRelativeDir = expandedPrefix.slice(2); // Remove ~/
 						const dir = dirname(homeRelativeDir);
 						relativePath = `~/${dir === "." ? name : join(dir, name)}`;
-					} else if (prefix.startsWith("/")) {
+					} else if (expandedPrefix.startsWith("/")) {
 						// Absolute path - construct properly
-						const dir = dirname(prefix);
+						const dir = dirname(expandedPrefix);
 						if (dir === "/") {
 							relativePath = `/${name}`;
 						} else {
 							relativePath = `${dir}/${name}`;
 						}
 					} else {
-						relativePath = join(dirname(prefix), name);
+						relativePath = join(dirname(expandedPrefix), name);
 					}
 				} else {
 					// For standalone entries, preserve ~/ if original prefix was ~/
-					if (prefix.startsWith("~")) {
+					const unescapedPrefix = unescapePathSpaces(prefix);
+					if (unescapedPrefix.startsWith("~")) {
 						relativePath = `~/${name}`;
 					} else {
 						relativePath = name;
 					}
 				}
 
+				// Escape spaces in the path for shell-like behavior
+				const escapedPath = escapePathSpaces(relativePath);
 				suggestions.push({
-					value: isDirectory ? `${relativePath}/` : relativePath,
+					value: isDirectory ? `${escapedPath}/` : escapedPath,
 					label: name + (isDirectory ? "/" : ""),
 				});
 			}
@@ -533,9 +569,11 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 				// fd already includes trailing / for directories
 				const pathWithoutSlash = isDirectory ? entryPath.slice(0, -1) : entryPath;
 				const entryName = basename(pathWithoutSlash);
+				// Escape spaces in the path for shell-like behavior
+				const escapedPath = escapePathSpaces(entryPath);
 
 				suggestions.push({
-					value: `@${entryPath}`,
+					value: `@${escapedPath}`,
 					label: entryName + (isDirectory ? "/" : ""),
 					description: pathWithoutSlash,
 				});
